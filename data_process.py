@@ -82,6 +82,12 @@ max_a_len = 64
 batch_size = 4
 epochs = 40
 
+# max_p_len = 128
+# max_q_len = 64
+# max_a_len = 16
+# batch_size = 32
+# epochs = 100
+
 # bert配置
 config_path = '/data/xyang/NLP/Bert_model/tf/chinese_roberta_wwm_ext/bert_config.json'
 checkpoint_path = '/data/xyang/NLP/Bert_model/tf/chinese_roberta_wwm_ext/bert_model.ckpt'
@@ -125,8 +131,8 @@ class data_generator(DataGenerator):
             a_token_ids, _ = tokenizer.encode(a, maxlen=max_a_len)
             q_token_ids, _ = tokenizer.encode(q, maxlen=max_q_len)
             token_ids = p_token_ids + a_token_ids[1:] + q_token_ids[1:]
-            segment_ids = [0] * len(p_token_ids)
-            segment_ids += [1] * (len(token_ids) - len(p_token_ids))
+            segment_ids = [0] * len(p_token_ids + a_token_ids[1:])
+            segment_ids += [1] * (len(q_token_ids[1:]))
             batch_token_ids.append(token_ids)
             batch_segment_ids.append(segment_ids)
             if len(batch_token_ids) == self.batch_size or is_end:
@@ -170,15 +176,16 @@ class QuestionAnswerGeneration(AutoRegressiveDecoder):
         segment_ids = np.concatenate([segment_ids, np.ones_like(output_ids)], 1)
         return model.predict([token_ids, segment_ids])[:, -1]
 
-    def generate(self, passage, topk=5):
-        token_ids, segment_ids = tokenizer.encode(passage, maxlen=max_p_len)
-        a_ids = self.random_sample([token_ids, segment_ids], 1,
-                                   topk)[0]  # 基于随机采样
-        token_ids += list(a_ids)
-        segment_ids += [1] * len(a_ids)
+    def generate(self, text, answer, topk=5):
+        token_ids, segment_ids = tokenizer.encode(text, maxlen=max_p_len)
+        answer_token_ids, answer_segment_ids = tokenizer.encode(answer, maxlen=max_a_len)
+        # a_ids = self.random_sample([token_ids, segment_ids], 1,
+        #                            topk)[0]  # 基于随机采样
+        token_ids += list(answer_token_ids)
+        segment_ids += [1] * len(answer_token_ids)
         q_ids = self.beam_search([token_ids, segment_ids],
                                  topk)  # 基于beam search
-        return (tokenizer.decode(q_ids), tokenizer.decode(a_ids))
+        return tokenizer.decode(q_ids)
 
 qag = QuestionAnswerGeneration(
     start_id=None, end_id=tokenizer._token_end_id, maxlen=max_q_len
@@ -189,8 +196,8 @@ def predict_to_file(data, filename, topk=1):
     """
     with open(filename, 'w', encoding='utf-8') as f:
         for d in tqdm(iter(data), desc=u'正在预测(共%s条样本)' % len(data)):
-            q, a = qag.generate(d[0])
-            s = '%s\t%s\t%s\n' % (q, a, d[0])
+            q = qag.generate(d[0],d[2])
+            s = '%s\t%s\t%s\n' % (q, d[2], d[0])
             f.write(s)
             f.flush()
 
