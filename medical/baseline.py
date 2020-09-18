@@ -21,15 +21,15 @@ import pandas as pd
 import tensorflow as tf
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
 os.environ["CUDA_VISIBLE_DEVICES"]="1"
-config = tf.ConfigProto()
-config.gpu_options.per_process_gpu_memory_fraction = 0.8  # 占用GPU60%的显存
-session = tf.Session(config=config)
+# config = tf.ConfigProto()
+# config.gpu_options.per_process_gpu_memory_fraction = 0.9  # 占用GPU60%的显存
+# session = tf.Session(config=config)
 
 # 基本参数
 max_text_len = 384
-max_question_len = 64
+max_question_len = 132
 max_answer_len = 64
-batch_size = 5
+batch_size = 8
 epochs = 5
 
 # bert配置
@@ -38,79 +38,41 @@ checkpoint_path = '/data/xyang/NLP/Bert_model/tensorflow/chinese_roberta_wwm_ext
 dict_path = '/data/xyang/NLP/Bert_model/tensorflow/chinese_roberta_wwm_ext/vocab.txt'
 
 
-# def load_data(filename):
-#     D = []
-#     with open(filename, encoding='utf-8') as f:
-#         for l in f:
-#             title, content = l.strip().split('\t')
-#             D.append((title, content))
-#     return D
+# ### 加载数据集
+# train_file = open('./round1_train_0907.json', encoding='utf-8')
+# test_file = open('./round1_test_0907.json', encoding='utf-8')
 #
-# # 加载数据集
-# train_data = load_data('/root/csl/train.tsv')
-# valid_data = load_data('/root/csl/val.tsv')
-# test_data = load_data('/root/csl/test.tsv')
-
-### 加载数据集
-train_file = open('./round1_train_0907.json', encoding='utf-8')
-test_file = open('./round1_test_0907.json', encoding='utf-8')
-
-train_or_data = json.load(train_file)
-test_or_data = json.load(test_file)
+# train_or_data = json.load(train_file)
+# test_or_data = json.load(test_file)
 
 train_df = pd.read_csv('./train.csv', encoding='utf-8')
 test_df = pd.read_csv('./test.csv', encoding='utf-8')
 
-def text_segmentate(text, maxlen, seps='\n', strips=None):
-    """将文本按照标点符号划分为若干个短句
-    """
-    text = text.strip().strip(strips)
-    if seps and len(text) > maxlen:
-        pieces = text.split(seps[0])
-        text, texts = '', []
-        for i, p in enumerate(pieces):
-            if text and p and len(text) + len(p) > maxlen - 1:
-                texts.extend(text_segmentate(text, maxlen, seps[1:], strips))
-                text = ''
-            if i + 1 == len(pieces):
-                text = text + p
-            else:
-                text = text + p + seps[0]
-        if text:
-            texts.extend(text_segmentate(text, maxlen, seps[1:], strips))
-        return texts
-    else:
-        return [text]
-
 # 筛选数据
 seps, strips = u'\n。！？!?；;，, ', u'；;，, '
-data = []
+train_data_all = []
 
 for idx in range(train_df.shape[0]):
     if train_df['answer'][idx]:
-        for t in text_segmentate(train_df['text'][idx], max_text_len - 2, seps, strips):
-            if train_df['answer'][idx] in t:
-                data.append((t, train_df['question'][idx], train_df['answer'][idx]))
+        train_data_all.append((train_df['text'][idx], train_df['question'][idx], train_df['answer'][idx]))
 
-random_order = list(range(len(data)))
+random_order = list(range(len(train_data_all)))
 np.random.shuffle(random_order)
 json.dump(random_order, open('../random_order.json', 'w'), indent=4)
 
 # 划分valid
-train_data = [data[j] for i, j in enumerate(random_order) if i % 10 != 0]
-valid_data = [data[j] for i, j in enumerate(random_order) if i % 10 == 0]
+train_data = [train_data_all[j] for i, j in enumerate(random_order) if i % 10 != 0]
+valid_data = [train_data_all[j] for i, j in enumerate(random_order) if i % 10 == 0]
 
 test_data = []
 
 for idx in range(test_df.shape[0]):
     if test_df['answer'][idx]:
-        for t in text_segmentate(test_df['text'][idx], max_text_len - 2, seps, strips):
-            if test_df['answer'][idx] in t:
-                data.append((t, test_df['question'][idx], test_df['answer'][idx]))
+        test_data.append((test_df['text'][idx], test_df['question'][idx], test_df['answer'][idx]))
 
-random_order = list(range(len(data)))
+random_order = list(range(len(test_data)))
 
-test_data = [data[j] for i, j in enumerate(random_order)]
+test_data = [test_data[j] for i, j in enumerate(random_order)]
 
 # 加载并精简词表，建立分词器
 token_dict, keep_tokens = load_vocab(
@@ -142,6 +104,37 @@ tokenizer = Tokenizer(token_dict, do_lower_case=True)
 #                 yield [batch_token_ids, batch_segment_ids], None
 #                 batch_token_ids, batch_segment_ids = [], []
 
+def split_str(text, answer):
+    try:
+        an_index = text.rfind(answer)
+        text_begin = text[:an_index]
+        answer_len = len(answer)
+        text_end = text[an_index+answer_len-1:]
+    except:
+        answer_len = len(answer)
+        if answer_len > 50:
+            an_index = text.rfind(answer[answer_len//4:3*answer_len//4])
+            begin_index = max(0, an_index-1-(answer_len//4))
+            end_index = min(len(text), begin_index+answer_len-1)
+            text_begin = text[:begin_index]
+            text_end = text[end_index:]
+        else:
+            text_begin = text[:-answer_len-2]
+            text_end = text[-2:]
+    return text_begin, text_end, answer
+
+def delete_text(cb_text, b_len, e_len, cut_len):
+    if e_len > cut_len:
+        cb_text = cb_text[:-cut_len]
+    elif b_len > cut_len:
+        cb_text = cb_text[cut_len:]
+    elif (e_len + b_len) > cut_len:
+        cb_text = cb_text[:-e_len]
+        cb_text = cb_text[cut_len-e_len:]
+    else:
+        cb_text = cb_text[:-cut_len]
+    return cb_text
+
 class data_generator(DataGenerator):
     """数据生成器
     """
@@ -151,13 +144,20 @@ class data_generator(DataGenerator):
         idxs = list(range(len(self.data)))
         batch_token_ids, batch_segment_ids = [], []
         for i in idxs:
-            p, q, a = self.data[i]
-            p_token_ids, _ = tokenizer.encode(p, max_length=max_text_len + 1)
-            a_token_ids, _ = tokenizer.encode(a, max_length=max_answer_len)
-            q_token_ids, _ = tokenizer.encode(q, max_length=max_question_len)
-            token_ids = p_token_ids + a_token_ids[1:] + q_token_ids[1:]
-            segment_ids = [0] * len(p_token_ids + a_token_ids[1:])
-            segment_ids += [1] * (len(q_token_ids[1:]))
+            text, question, answer = self.data[i]
+            text_begin, text_end, _ = split_str(text, answer)
+            text_cut_len = max(0, len(text) - 507 - 132)
+            text_combine = delete_text(text, len(text_begin), len(text_end), text_cut_len)
+
+            # text_b_token_ids, _ = tokenizer.encode(text_begin, max_length=375)
+            # text_e_token_ids, _ = tokenizer.encode(text_end, max_length=375)
+            # answer_token_ids, _ = tokenizer.encode(answer, max_length=256)
+
+            text_token_ids, _ = tokenizer.encode(text_combine, max_length=375)
+            question_token_ids, _ = tokenizer.encode(question, max_length=132)
+            token_ids = text_token_ids + question_token_ids
+            segment_ids = [0] * (len(token_ids) - len(question_token_ids[1:]))
+            segment_ids += [1] * (len(question_token_ids[1:]))
             batch_token_ids.append(token_ids)
             batch_segment_ids.append(segment_ids)
             if len(batch_token_ids) == self.batch_size or i==idxs[-1]:
@@ -202,6 +202,22 @@ class AutoTitle(AutoRegressiveDecoder):
         answer_token_ids, answer_segment_ids = tokenizer.encode(answer, max_length=max_answer_len)
         token_ids += list(answer_token_ids[1:])
         segment_ids += [0] * len(answer_token_ids[1:])
+
+        text_begin, text_end, _ = split_str(text, answer)
+        text_cut_len = max(0, len(text) - 507 - 132)
+        text_combine = delete_text(text, len(text_begin), len(text_end), text_cut_len)
+
+        # text_b_token_ids, _ = tokenizer.encode(text_begin, max_length=375)
+        # text_e_token_ids, _ = tokenizer.encode(text_end, max_length=375)
+        # answer_token_ids, _ = tokenizer.encode(answer, max_length=256)
+
+        text_token_ids, _ = tokenizer.encode(text_combine, max_length=375)
+
+        # token_ids = text_b_token_ids[:min(len(text_begin), 375)] + \
+        #             answer_token_ids[:min(len(answer), 256)] + text_e_token_ids[:min(len(text_end),375)]
+
+        token_ids = text_token_ids
+        segment_ids = [0] * (len(token_ids))
 
         output_ids = self.beam_search([token_ids, segment_ids], topk)  # 基于beam search
         return tokenizer.decode(output_ids)
