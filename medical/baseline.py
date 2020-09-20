@@ -152,8 +152,15 @@ class data_generator(DataGenerator):
             # text_b_token_ids, _ = tokenizer.encode(text_begin, max_length=375)
             # text_e_token_ids, _ = tokenizer.encode(text_end, max_length=375)
             # answer_token_ids, _ = tokenizer.encode(answer, max_length=256)
-
-            text_token_ids, _ = tokenizer.encode(text_combine, max_length=375)
+            
+            token_ids = text_b_token_ids[:min(len(text_begin), 375)] + \
+                     answer_token_ids[:min(len(answer), 256)] + text_e_token_ids[:min(len(text_end),375)]
+            text_b_token_ids[:min(len(text_begin), 375)].insert(0,'[CLS]')
+            text_b_token_ids[:min(len(text_begin), 375)].append('[SEP]')
+            answer_token_ids[:min(len(answer), 256)]
+            
+#             text_token_ids, _ = tokenizer.encode(text_combine, max_length=375)
+            
             question_token_ids, _ = tokenizer.encode(question, max_length=132)
             token_ids = text_token_ids + question_token_ids
             segment_ids = [0] * (len(token_ids) - len(question_token_ids[1:]))
@@ -213,8 +220,8 @@ class AutoTitle(AutoRegressiveDecoder):
 
         text_token_ids, _ = tokenizer.encode(text_combine, max_length=375)
 
-        # token_ids = text_b_token_ids[:min(len(text_begin), 375)] + \
-        #             answer_token_ids[:min(len(answer), 256)] + text_e_token_ids[:min(len(text_end),375)]
+#         token_ids = text_b_token_ids[:min(len(text_begin), 375)] + \
+#                     answer_token_ids[:min(len(answer), 256)] + text_e_token_ids[:min(len(text_end),375)]
 
         token_ids = text_token_ids
         segment_ids = [0] * (len(token_ids))
