@@ -15,6 +15,8 @@ from bert4keras.snippets import sequence_padding, open
 from bert4keras.snippets import DataGenerator, AutoRegressiveDecoder
 from rouge import Rouge  # pip install rouge
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+from keras.layers import Input
+from keras.models import Model
 
 import pandas as pd
 import os
@@ -125,7 +127,7 @@ class data_generator(DataGenerator):
         idxs = list(range(len(self.data)))
         if random:
             np.random.shuffle(idxs)
-        batch_token_ids, batch_segment_ids = [], []
+        batch_token_ids, batch_segment_ids, batch_o_token_ids = [], [], []
         for i in idxs:
             text, question, answer = self.data[i]
             text_begin, text_end, _ = split_str(text, answer)
@@ -139,13 +141,21 @@ class data_generator(DataGenerator):
             token_ids, segment_ids = tokenizer.encode(text_new,
                                                       question,
                                                       max_length=maxlen)
+            o_token_ids = token_ids
+            if np.random.random() > 0.5:
+                token_ids = [
+                    t if s == 0 or (s == 1 and np.random.random() > 0.3) else np.random.choice(token_ids)
+                    for t, s in zip(token_ids, segment_ids)
+                ]
             batch_token_ids.append(token_ids)
             batch_segment_ids.append(segment_ids)
+            batch_o_token_ids.append(o_token_ids)
             if len(batch_token_ids) == self.batch_size or i == idxs[-1]:
                 batch_token_ids = sequence_padding(batch_token_ids)
                 batch_segment_ids = sequence_padding(batch_segment_ids)
-                yield [batch_token_ids, batch_segment_ids], None
-                batch_token_ids, batch_segment_ids = [], []
+                batch_o_token_ids = sequence_padding(batch_o_token_ids)
+                yield [batch_token_ids, batch_segment_ids, batch_o_token_ids], None
+                batch_token_ids, batch_segment_ids, batch_o_token_ids  = [], [], []
 
 
 model = build_transformer_model(
@@ -157,15 +167,18 @@ model = build_transformer_model(
 
 model.summary()
 
+o_in = Input(shape=(None, ))
+train_model = Model(model.inputs + [o_in], model.outputs + [o_in])
+
 # 交叉熵作为loss，并mask掉输入部分的预测
-y_true = model.input[0][:, 1:]  # 目标tokens
-y_mask = model.input[1][:, 1:]
-y_pred = model.output[:, :-1]  # 预测tokens，预测与目标错开一位
+y_true = train_model.input[2][:, 1:]  # 目标tokens
+y_mask = train_model.input[1][:, 1:]
+y_pred = train_model.output[0][:, :-1]  # 预测tokens，预测与目标错开一位
 cross_entropy = K.sparse_categorical_crossentropy(y_true, y_pred)
 cross_entropy = K.sum(cross_entropy * y_mask) / K.sum(y_mask)
 
-model.add_loss(cross_entropy)
-model.compile(optimizer=Adam(1e-5))
+train_model.add_loss(cross_entropy)
+train_model.compile(optimizer=Adam(1e-5))
 
 
 class AutoTitle(AutoRegressiveDecoder):
@@ -244,7 +257,7 @@ if __name__ == '__main__':
     evaluator = Evaluate()
     train_generator = data_generator(train_data, batch_size)
 
-    model.fit_generator(train_generator.forfit(),
+    train_model.fit_generator(train_generator.forfit(),
                         steps_per_epoch=len(train_generator),
                         epochs=epochs,
                         callbacks=[evaluator])
