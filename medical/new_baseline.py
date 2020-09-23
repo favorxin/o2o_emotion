@@ -132,6 +132,25 @@ def delete_text(cb_text, b_len, e_len, cut_len):
         an_index = len(cb_text) - e_len
     return cb_text, b_index, an_index
 
+### 新的预处理过程
+def replace_text_answer(text, answer):
+    an_index = text.rfind(answer)
+    if an_index == -1:
+        an_index = text.rfind(answer[:-1] + '.')
+        text_cur_list = list(text)
+        text_cur_list[an_index + len(answer)] = '.'
+        text_cur_list.insert(an_index, '#')
+        text_cur_list.insert(an_index+len(answer)+1, '*')
+        text_new = ''.join(text_cur_list)
+    else:
+        text_cur_list = list(text)
+        text_cur_list.insert(an_index, '#')
+        text_cur_list.insert(an_index+len(answer)+1, '*')
+        text_new = ''.join(text_cur_list)
+        
+    return text_new
+
+
 class data_generator(DataGenerator):
     """数据生成器
     """
