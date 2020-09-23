@@ -20,6 +20,7 @@ from keras.models import Model
 
 import pandas as pd
 import os
+import json
 import tensorflow as tf
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
 os.environ["CUDA_VISIBLE_DEVICES"]="0"
@@ -30,12 +31,12 @@ session = tf.Session(config=config)
 # 基本参数
 maxlen = 512
 batch_size = 8
-epochs = 3
+epochs = 5
 
 # bert配置
-config_path = '/data/xyang/NLP/Bert_model/tensorflow/chinese_roberta_wwm_ext/bert_config.json'
-checkpoint_path = '/data/xyang/NLP/Bert_model/tensorflow/chinese_roberta_wwm_ext/bert_model.ckpt'
-dict_path = '/data/xyang/NLP/Bert_model/tensorflow/chinese_roberta_wwm_ext/vocab.txt'
+config_path = '/data/xyang/NLP/Bert_model/tensorflow/chinese_wwm_ext_L-12_H-768_A-12/bert_config.json'
+checkpoint_path = '/data/xyang/NLP/Bert_model/tensorflow/chinese_wwm_ext_L-12_H-768_A-12/bert_model.ckpt'
+dict_path = '/data/xyang/NLP/Bert_model/tensorflow/chinese_wwm_ext_L-12_H-768_A-12/vocab.txt'
 
 
 # def load_data(filename):
@@ -54,6 +55,7 @@ dict_path = '/data/xyang/NLP/Bert_model/tensorflow/chinese_roberta_wwm_ext/vocab
 
 train_df = pd.read_csv('./train.csv')
 test_df = pd.read_csv('./test.csv')
+test_file = open('./round1_test_0907.json', encoding='utf-8')
 
 train_data_all = []
 for idx in range(train_df.shape[0]):
@@ -66,7 +68,17 @@ np.random.shuffle(random_order)
 
 # 划分valid
 train_data = [train_data_all[j] for i, j in enumerate(random_order) if i % 10 != 0]
-valid_data = [train_data_all[j] for i, j in enumerate(random_order) if i % 100 == 0]
+valid_data = [train_data_all[j] for i, j in enumerate(random_order) if i % 10 == 0]
+
+test_data = []
+
+for idx in range(test_df.shape[0]):
+    if test_df['answer'][idx]:
+        test_data.append((test_df['text'][idx], test_df['question'][idx], test_df['answer'][idx]))
+
+random_order = list(range(len(test_data)))
+
+test_data = [test_data[j] for i, j in enumerate(random_order)]
 
 # 加载并精简词表，建立分词器
 token_dict, keep_tokens = load_vocab(
@@ -210,6 +222,19 @@ autotitle = AutoTitle(start_id=None,
                       end_id=tokenizer._token_sep_id,
                       maxlen=133)
 
+def predict_to_file(test_file, filename, topk=1):
+    """将预测结果输出到文件，方便评估
+    """
+    test_data = json.load(test_file)
+    # with open(filename, 'w', encoding='utf-8') as f:
+    for param in tqdm(iter(test_data), desc=u'正在预测(共%s条样本)' % len(test_data)):
+        for idx in range(len(param['annotations'])):
+            q = autotitle.generate(param['text'],param['annotations'][idx]['A'])
+            param['annotations'][idx]['Q'] = q
+            # s = '%s\t%s\t%s\n' % (q, d[2], d[0])
+    with open(filename, "w") as f:
+        json.dump(test_data, f)
+    print("保存文件完成...")
 
 class Evaluate(keras.callbacks.Callback):
     def __init__(self):
@@ -221,7 +246,7 @@ class Evaluate(keras.callbacks.Callback):
         metrics = self.evaluate(valid_data)  # 评测模型
         if metrics['bleu'] > self.best_bleu:
             self.best_bleu = metrics['bleu']
-            model.save_weights('./best_model.baseline.weights')  # 保存模型
+            model.save_weights('./best_model.baseline_e5.weights')  # 保存模型
         metrics['best_bleu'] = self.best_bleu
         print('valid_data:', metrics)
 
@@ -263,5 +288,5 @@ if __name__ == '__main__':
                         callbacks=[evaluator])
 
 else:
-
-    model.load_weights('./best_model.baseline.weights')
+    model.load_weights('./best_model.baseline_e5.weights')
+    predict_to_file(test_file, "./inference.json")
