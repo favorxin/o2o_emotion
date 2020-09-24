@@ -7,7 +7,7 @@
 from __future__ import print_function
 import numpy as np
 from tqdm import tqdm
-from bert4keras.backend import keras, K
+from bert4keras.backend import keras, K, search_layer
 from bert4keras.models import build_transformer_model
 from bert4keras.tokenizers import Tokenizer, load_vocab
 from bert4keras.optimizers import Adam
@@ -24,14 +24,14 @@ import json
 import tensorflow as tf
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
 os.environ["CUDA_VISIBLE_DEVICES"]="0"
-config = tf.ConfigProto()
-config.gpu_options.per_process_gpu_memory_fraction = 0.9  # 占用GPU60%的显存
-session = tf.Session(config=config)
+# config = tf.ConfigProto()
+# config.gpu_options.per_process_gpu_memory_fraction = 0.9  # 占用GPU60%的显存
+# session = tf.Session(config=config)
 
 # 基本参数
 maxlen = 512
-batch_size = 8
-epochs = 5
+batch_size = 3
+epochs = 7
 
 # bert配置
 config_path = '/data/xyang/NLP/Bert_model/tensorflow/chinese_wwm_ext_L-12_H-768_A-12/bert_config.json'
@@ -70,15 +70,15 @@ np.random.shuffle(random_order)
 train_data = [train_data_all[j] for i, j in enumerate(random_order) if i % 10 != 0]
 valid_data = [train_data_all[j] for i, j in enumerate(random_order) if i % 10 == 0]
 
-test_data = []
-
-for idx in range(test_df.shape[0]):
-    if test_df['answer'][idx]:
-        test_data.append((test_df['text'][idx], test_df['question'][idx], test_df['answer'][idx]))
-
-random_order = list(range(len(test_data)))
-
-test_data = [test_data[j] for i, j in enumerate(random_order)]
+# test_data = []
+# 
+# for idx in range(test_df.shape[0]):
+#     if test_df['answer'][idx]:
+#         test_data.append((test_df['text'][idx], test_df['question'][idx], test_df['answer'][idx]))
+# 
+# random_order = list(range(len(test_data)))
+# 
+# test_data = [test_data[j] for i, j in enumerate(random_order)]
 
 # 加载并精简词表，建立分词器
 token_dict, keep_tokens = load_vocab(
@@ -132,7 +132,7 @@ def delete_text(cb_text, b_len, e_len, cut_len):
         an_index = len(cb_text) - e_len
     return cb_text, b_index, an_index
 
-### 新的预处理过程
+### 新数据预处理
 def replace_text_answer(text, answer):
     an_index = text.rfind(answer)
     if an_index == -1:
@@ -140,16 +140,44 @@ def replace_text_answer(text, answer):
         text_cur_list = list(text)
         text_cur_list[an_index + len(answer)] = '.'
         text_cur_list.insert(an_index, '#')
-        text_cur_list.insert(an_index+len(answer)+1, '*')
+        text_cur_list.insert(an_index + len(answer) + 1, '*')
         text_new = ''.join(text_cur_list)
+        end_index = an_index + len(answer) + 2
     else:
         text_cur_list = list(text)
         text_cur_list.insert(an_index, '#')
-        text_cur_list.insert(an_index+len(answer)+1, '*')
+        text_cur_list.insert(an_index + len(answer) + 1, '*')
         text_new = ''.join(text_cur_list)
-        
-    return text_new
+        end_index = an_index + len(answer) + 2
 
+    return text_new, an_index, end_index
+
+def cut_text(text, b_len, e_len, cut_len):
+    cb_text = text
+    if cut_len > 0:
+        if e_len > cut_len:
+            b_index = b_len
+            an_index = len(cb_text) - e_len
+            cb_text = cb_text[:-cut_len]
+        elif b_len > cut_len:
+            b_index = b_len - cut_len
+            an_index = len(cb_text) - e_len - cut_len
+            cb_text = cb_text[cut_len:]
+        elif (e_len + b_len) > cut_len:
+            b_index = b_len - (cut_len - e_len)
+            an_index = len(cb_text) - cut_len
+            cb_text = cb_text[:-e_len]
+            cb_text = cb_text[cut_len-e_len:]
+        else:
+            b_index = b_len
+            an_index = len(cb_text) - cut_len
+            cb_text = cb_text[:-cut_len]
+            if '*' not in cb_text and "#" in cb_text:
+                cb_text = cb_text[:-1] + '*'
+    else:
+        b_index = b_len
+        an_index = len(cb_text) - e_len
+    return cb_text
 
 class data_generator(DataGenerator):
     """数据生成器
@@ -188,6 +216,41 @@ class data_generator(DataGenerator):
                 yield [batch_token_ids, batch_segment_ids, batch_o_token_ids], None
                 batch_token_ids, batch_segment_ids, batch_o_token_ids  = [], [], []
 
+# class data_generator(DataGenerator):
+#     """数据生成器
+#     """
+#     def __iter__(self, random=False):
+#         idxs = list(range(len(self.data)))
+#         if random:
+#             np.random.shuffle(idxs)
+#         batch_token_ids, batch_segment_ids, batch_o_token_ids = [], [], []
+#         for i in idxs:
+#             text, question, answer = self.data[i]
+#             text_re, an_index, end_index = replace_text_answer(text, answer)
+#             text_cut_len = max(0, len(text_re) - 509 + 133)
+#             b_len = an_index
+#             e_len = len(text_re) - end_index
+#             text_new = cut_text(text_re, b_len, e_len, text_cut_len)
+#
+#             token_ids, segment_ids = tokenizer.encode(text_new,
+#                                                       question,
+#                                                       max_length=maxlen)
+#             o_token_ids = token_ids
+#             if np.random.random() > 0.5:
+#                 token_ids = [
+#                     t if s == 0 or (s == 1 and np.random.random() > 0.3) else np.random.choice(token_ids)
+#                     for t, s in zip(token_ids, segment_ids)
+#                 ]
+#             batch_token_ids.append(token_ids)
+#             batch_segment_ids.append(segment_ids)
+#             batch_o_token_ids.append(o_token_ids)
+#             if len(batch_token_ids) == self.batch_size or i == idxs[-1]:
+#                 batch_token_ids = sequence_padding(batch_token_ids)
+#                 batch_segment_ids = sequence_padding(batch_segment_ids)
+#                 batch_o_token_ids = sequence_padding(batch_o_token_ids)
+#                 yield [batch_token_ids, batch_segment_ids, batch_o_token_ids], None
+#                 batch_token_ids, batch_segment_ids, batch_o_token_ids  = [], [], []
+
 
 model = build_transformer_model(
     config_path,
@@ -198,6 +261,15 @@ model = build_transformer_model(
 
 model.summary()
 
+def sparse_categorical_crossentropy(y_true, y_pred):
+    """自定义稀疏交叉熵
+    这主要是因为keras自带的sparse_categorical_crossentropy不支持求二阶梯度。
+    """
+    y_true = K.reshape(y_true, K.shape(y_pred)[:-1])
+    y_true = K.cast(y_true, 'int32')
+    y_true = K.one_hot(y_true, K.shape(y_pred)[-1])
+    return K.categorical_crossentropy(y_true, y_pred)
+
 o_in = Input(shape=(None, ))
 train_model = Model(model.inputs + [o_in], model.outputs + [o_in])
 
@@ -205,11 +277,17 @@ train_model = Model(model.inputs + [o_in], model.outputs + [o_in])
 y_true = train_model.input[2][:, 1:]  # 目标tokens
 y_mask = train_model.input[1][:, 1:]
 y_pred = train_model.output[0][:, :-1]  # 预测tokens，预测与目标错开一位
-cross_entropy = K.sparse_categorical_crossentropy(y_true, y_pred)
+cross_entropy = sparse_categorical_crossentropy(y_true, y_pred)
 cross_entropy = K.sum(cross_entropy * y_mask) / K.sum(y_mask)
 
-train_model.add_loss(cross_entropy)
+embeddings = search_layer(train_model.output[0], 'Embedding-Token').embeddings
+gp = K.sum(K.gradients(cross_entropy, [embeddings])[0].values**2)
+
+train_model.add_loss(cross_entropy + 0.5 * gp)
 train_model.compile(optimizer=Adam(1e-5))
+
+# train_model.add_loss(cross_entropy)
+# train_model.compile(optimizer=Adam(1e-5))
 
 
 class AutoTitle(AutoRegressiveDecoder):
@@ -224,13 +302,20 @@ class AutoTitle(AutoRegressiveDecoder):
 
     def generate(self, text, answer, topk=1):
         max_c_len = maxlen - self.maxlen
+
         text_begin, text_end, _ = split_str(text, answer)
         text_cut_len = max(0, len(text) - 507 + 133)
         text_combine, b_index, an_index = delete_text(text, len(text_begin), len(text_end), text_cut_len)
         text_combine_li = list(text_combine)
         text_combine_li.insert(b_index, '#')
         text_combine_li.insert(an_index + 1, '*')
-        text_new = "".join(text_combine_li)
+        text_new = ''.join(text_combine_li)
+
+        # text_re, an_index, end_index = replace_text_answer(text, answer)
+        # text_cut_len = max(0, len(text_re) - 509 + 133)
+        # b_len = an_index
+        # e_len = len(text_re) - end_index
+        # text_new = cut_text(text_re, b_len, e_len, text_cut_len)
 
         token_ids, segment_ids = tokenizer.encode(text_new, max_length=max_c_len)
         output_ids = self.beam_search([token_ids, segment_ids], topk)  # 基于beam search
@@ -265,7 +350,7 @@ class Evaluate(keras.callbacks.Callback):
         metrics = self.evaluate(valid_data)  # 评测模型
         if metrics['bleu'] > self.best_bleu:
             self.best_bleu = metrics['bleu']
-            model.save_weights('./best_model.baseline_e5.weights')  # 保存模型
+            model.save_weights('./best_model.baseline_e7_newpro_gp.weights')  # 保存模型
         metrics['best_bleu'] = self.best_bleu
         print('valid_data:', metrics)
 
@@ -307,5 +392,5 @@ if __name__ == '__main__':
                         callbacks=[evaluator])
 
 else:
-    model.load_weights('./best_model.baseline_e5.weights')
-    predict_to_file(test_file, "./inference.json")
+    train_model.load_weights('./best_model.baseline_e7_newpro_gp.weights')
+    predict_to_file(test_file, "./inference_e7_newpro_gp.json")
